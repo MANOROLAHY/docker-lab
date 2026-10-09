@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Construire et tester l'image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Construire l'image
+        run: docker build -t lab-app:ci .
+
+      - name: Lancer le conteneur
+        run: docker run -d --name lab-app -p 127.0.0.1:8091:8080 lab-app:ci
+
+      - name: Attendre que l'application soit prête
+        run: |
+          for i in $(seq 1 20); do
+            curl -fs http://127.0.0.1:8091/health && exit 0
+            echo "attente $i..."
+            sleep 1
+          done
+          docker logs lab-app
+          exit 1
+
+      - name: Vérifier le message renvoyé
+        run: |
+          curl -fs http://127.0.0.1:8091 > reponse.txt
+          cat reponse.txt
+          grep -q "Bonjour depuis Docker" reponse.txt
+
+      - name: Vérifier que l'application ne tourne pas en root
+        run: |
+          UTILISATEUR=$(docker exec lab-app whoami)
+          echo "utilisateur du conteneur : $UTILISATEUR"
+          test "$UTILISATEUR" = "nobody"
+
+  compose:
+    name: Tester la stack Compose
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Valider le fichier compose
+        run: docker compose config --quiet
+
+      - name: Démarrer la stack et attendre qu'elle soit saine
+        run: docker compose up -d --wait
+
+      - name: Tester l'application
+        run: curl -fs http://127.0.0.1:8092/health
+
+      - name: Tester la base de données
+        run: docker compose exec -T db psql -U lab -d labdb -c "select 1 as ok;"
+
+      - name: Afficher les journaux en cas d'échec
+        if: failure()
+        run: docker compose logs
